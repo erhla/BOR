@@ -13,3 +13,5 @@ The Cook County Assessor issues and utilizes [860 neighborhood boundaries](https
 [Report here](/pilsen_analysis.html)
 
 This report analyzes recent assessment quality in Pilsen and proposes a possible redelineation of the neighborhood.
+
+[Sales Ratio study only](/77141.html)
