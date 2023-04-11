@@ -72,6 +72,8 @@ joined <- sales %>% filter(year >= 2018,
 
 ratios <- reformat_data(joined %>% tibble(), 'sale_price', 'mailed_tot', 'year', TRUE) %>% tibble()
 
+# make_report(ratios %>% filter(triad_name == 'City'), 'Cook County (mailed, City Tri)', diagnostic = TRUE)
+
 nbhd_parcel_cnts <- assess %>% filter(tax_year == 2022,
                                       class %in% targ_class) %>%
   mutate(pin10 = str_sub(pin, 1, 10)) %>%
