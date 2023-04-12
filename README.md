@@ -31,7 +31,7 @@ Sales ratios studies for Assessor mailed values are shown for Cook County and ea
 [North Mailed](/Cook County (mailed).html) (reassessed in 2019 and 2022)
 [South Mailed](/Cook County (mailed).html) (reassessed in 2020)
 
-# TIF Districts
+## TIF Districts
 
 Tax increment financing (TIF) is a "special funding tool...used to promote public and private investment" in specific areas. TIFs are funded by capturing future property value increases through freezing property values for 23 or 35 years. 
 
