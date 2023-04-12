@@ -1,0 +1,311 @@
+---
+title: "Tax Increment Financing (TIF) Analysis"
+output: 
+  html_document:
+    df_print: paged
+    theme: sandstone
+author: "Eric Langowski"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, 
+                      message = FALSE, fig.width = 8, fig.height = 6)
+library(tidyverse)
+library(sf)
+library(cmfproperty)
+library(mapview)
+library(ggplot2)
+library(tidycensus)
+library(lubridate)
+library(tigris)
+theme_set(theme_bw())
+
+ptaxsim_db_conn <- DBI::dbConnect(RSQLite::SQLite(), "./ptaxsim.db")
+
+assess <- tbl(ptaxsim_db_conn, 'pin') %>%
+  filter(between(year, 2018, 2021)) %>%
+  select(year, pin, class, tax_code_num, av_mailed, av_certified, av_board) %>%
+  collect()
+
+tif_sum <- read_csv('all_tif_agency_sum.csv')
+tif_group <- read_csv('all_tif_class_group.csv')
+tif_burden <- read_csv('all_tif_burdened.csv')
+
+muni_sum <- read_csv('muni_agency_sum.csv')
+muni_group <- read_csv('muni_class_group.csv')
+muni_burden <- read_csv('muni_burdened.csv')
+
+clerk_tif <- 
+  readxl::read_excel('ptaxsim/data-raw/tif/distribution/2021 TIF Agency Distribution Report_0.xlsx')
+
+make_table <- function(inputdata){
+    DT::datatable(
+      inputdata, extensions = 'Buttons', 
+      rownames = FALSE,
+      options = list(
+        dom = 'Bfrtip', 
+        buttons = c('excel', 'pdf'),
+        pageLength = 10)
+  )
+}
+```
+
+
+Tax increment financing (TIF) is a "special funding tool...used to promote public and private investment" in specific areas. TIFs are funded by capturing future property value increases through freezing property values for 23 or 35 years. 
+
+In practice, TIFs have strange impacts on the property tax system. For example, any appeals or exemptions granted to properties in a TIF which is above its initial frozen value have no impact on tax rates and **only** reduce the amount of revenue that a TIF collects. This analysis attempts to quantify the impacts of TIFs by presenting alternate (counterfactual) tax bills as if they did not exist.
+
+This analysis utilizes [PTAXSIM](https://ccao-data-science---modeling.gitlab.io/packages/ptaxsim/index.html) and Cook County Open Data. In particular, the analysis of [Tinkering with TIFs](https://ccao-data-science---modeling.gitlab.io/packages/ptaxsim/articles/tifs.html) is replicated and expanded here.
+
+An exploration of three of the primary ways TIF districts impact levies and tax bills is explored here.
+
+- First, *counterfactual* changes to tax bills if a TIF district **did not exist**
+- Second, how a TIF district **burdens** its taxing district through the proportion of EAV locked into the TIF
+- Third, how changes to EAV within a TIF above its cap such as **appeals or exemptions** impact only revenue to the TIF, not the taxing body's tax rate
+
+This analysis is conducted for TIF districts active in tax year 2021.
+
+# Counterfactual TIF
+
+This section presents changes in tax bills if TIF Districts were eliminated and capped EAV was released. Assuming that taxing bodies hold their levies constant, the elimination of a TIF will increase taxing body EAV and therefore decreasing its tax rate leading to lower tax bills.
+
+Calculations are presented on the municipality level which approximates tax bill impacts. For example, the elimination of TIF `030210511 (CITY OF CHICAGO-53RD ST)` releases capped EAV back into the tax base for all the taxing districts which include 53rd Street in Chicago including the City of Chicago, Chicago Public Schools, Cook County, and others. To best understand how eliminating this TIF would change tax bills, all tax bills in Chicago are calculated with and without this TIF to identify changes.
+
+## By TIF District
+
+```{r}
+ggplot(tif_group %>% 
+         mutate(pct_change = (mean_notif - mean_tif) / mean_tif), 
+       aes(x=pct_change, y=class_group, group=class_group )) +
+  geom_boxplot() +
+  scale_x_continuous(labels=scales::percent) +
+  labs(x='Percent Change in Average Tax Bill', y='', title='Change in Average Tax Bill by Class by TIF')
+```
+
+Above, the change in mean tax bill for each TIF is shown separately for Commercial, Residential, and Other property classes for the corresponding municipality. The changes range from about 0%, for 33 TIFs which have current EAV below its capped value in Tax Year 2021, to 30% for TIF `031020500` in the Village of Phoenix (a small village by Harvey).
+
+## By Municipality
+
+```{r}
+ggplot(muni_group %>% 
+         mutate(pct_change = (mean_notif - mean_tif) / mean_tif), 
+       aes(x=pct_change, y=class_group, group=class_group )) +
+  geom_boxplot() +
+  scale_x_continuous(labels=scales::percent) +
+  labs(x='Percent Change in Average Tax Bill', y='', title='Change in Average Tax Bill by Class by Municipality')
+```
+
+Above, the change in mean tax bill for each municipality is shown separately for Commercial, Residential, and Other property classes if all of its TIF districts were eliminated. The changes range from about 0% to 30% in the Village of Phoenix (a small village by Harvey) which has a very high TIF burden.
+
+### Data
+
+#### By District
+
+Mean and Median tax bills with and without TIFs by property class groups
+
+```{r}
+tif_group %>%
+  mutate(across(where(is.numeric), round)) %>%
+  make_table()
+```
+
+#### By Municipality
+
+Mean and Median tax bills with and without TIFs by property class groups
+
+```{r}
+muni_group %>%
+  select(-targ_tif) %>%
+  mutate(across(where(is.numeric), round)) %>%
+  make_table()
+```
+
+# TIF Burdens
+
+What are the impacts of having large proportions of EAV in TIFs? TIF districts 'burden' their taxing bodies by reducing the available EAV base. For example, imagine two identical taxing bodies which both have a total EAV of 10,000. Body A has no TIF and Body B has a TIF district which froze its EAV at 5,000. If both bodies wanted to raise their levies to generate \$100 in additional revenue, taxpayers in Body A would pay \$100 more (1% increase in tax rate) but taxpayers in Body B would pay \$200 more (2% increase in tax rate) with \$100 going to Body B and \$100 going to Body B's TIF district.
+
+The following types of taxing bodies are excluded from this section: SSA, Cook County, Water, Mosquito, Health, Misc, and Bond. These bodies are either uncommon or include multiple municipalities.
+
+```{r}
+ggplot(muni_burden %>% 
+         filter(!agency_minor_type %in% 
+                  c('SSA', 'COOK', 'WATER', 'MOSQUITO', 'HEALTH', 'MISC', 'BOND')),
+       aes(x=burdened_pct)) +
+  geom_boxplot() +
+  scale_x_continuous(labels=scales::percent) +
+  labs(x='Burdened Percentage', y='', 
+       title='Share of Total EAV in TIF Districts by Taxing Bodies') +
+  facet_wrap(~agency_minor_type, scales = 'free_x')
+```
+
+The most burdened taxing bodies are the Village of East Dundee (275%) and Village of Phoenix (154%).
+
+As an example, lets look at Chicago.
+
+```{r}
+muni_burden %>% filter(name_mini == 'Chicago', !agency_minor_type %in% 
+                         c('SSA', 'COOK', 'WATER', 'MOSQUITO', 'HEALTH', 'MISC', 'BOND'),
+                       amt_to_tif > 0) %>%
+  select(agency_num, agency_name, agency_total_eav, amt_to_tif, burdened_pct) %>%
+  mutate(burdened_pct = scales::percent(burdened_pct, .001)) %>%
+  make_table()
+```
+
+Chicago has 6 taxing bodies which meet our criteria. Since all of these bodies only levy taxes on properties in Chicago, each of their total EAV and the amount of EAV in TIF districts is the same. Each of these bodies is burdened by 19.5%. This means that for every \$100 in increased revenue that Chicago bodies wish to raise, \$119.50 in additional taxes will be collected with \$19.50 going to Chicago's TIF Districts.
+
+### Data
+
+Information on all municipalities in 2021 with TIF districts.
+
+```{r}
+muni_burden %>% filter(!agency_minor_type %in% 
+                         c('SSA', 'COOK', 'WATER', 'MOSQUITO', 'HEALTH', 'MISC', 'BOND'),
+                       amt_to_tif > 0) %>%
+  select(municipality=name_mini, agency_num, agency_name, agency_total_eav, amt_to_tif, burdened_pct) %>%
+  mutate(burdened_pct = scales::percent(burdened_pct, .001)) %>%
+  make_table()
+```
+
+# 'Free' Appeals
+
+Whenever a property makes a successful appeal (which is not in a TIF), it reduces its individual EAV and the total amount of EAV available to its taxing districts. This causes an increase in tax rates for its taxing bodies. If a property is in a TIF and that TIF is above its frozen EAV, an appeal will be 'free' to its taxing bodies lowering only the amount of EAV that the TIF collects tax revenue on. Appeals have many impacts in Cook County and this section presents a narrow analysis focused only on TIF districts.
+
+## Appeals Summary
+
+The impact of successful appeals can be measured from mailed assessor values to certified assessor values ("Assessor appeals") and from certified assessor values to final board of review values ("Board appeals").
+
+```{r}
+reduc_cnts <- assess %>% mutate(assessor_appeal = if_else(av_mailed > av_certified, 1, 0),
+                  board_appeal = if_else(av_certified > av_board, 1, 0)) %>%
+  group_by(year) %>%
+  summarize(total_assessor_reductions = sum(assessor_appeal, na.rm=T),
+            total_board_reductions = sum(board_appeal, na.rm=T)) %>%
+  pivot_longer(!year)
+
+ggplot(reduc_cnts, aes(x=year, y=value, fill=name)) +
+  geom_bar(stat='identity', position='dodge') +
+  labs(x='Tax Year', y='Number of Reductions', fill='',
+       title='Number of Reductions in Appeals from Assess. and Board',
+       caption='Note that in 2020 the Assessor implemented widespread COVID reductions.')
+```
+
+```{r}
+total_av <- assess %>%
+  group_by(year) %>%
+  summarize(
+    total_mailed = sum(av_mailed, na.rm=T),
+    total_cert = sum(av_certified, na.rm=T),
+    total_board = sum(av_board, na.rm=T)
+  )
+
+ggplot(total_av %>%
+  pivot_longer(!year), aes(x=year, y=value/1e9, fill=fct_rev(name))) +
+  geom_bar(stat='identity', position='dodge') +
+  labs(x='Tax Year', y='AV (billions)', fill='Value',
+       title='Total Amount of AV (Billions) at Each Stage')
+
+total_av %>% mutate(assessor = total_mailed - total_cert,
+                    board = total_cert - total_board) %>%
+  select(year, assessor, board) %>%
+  pivot_longer(!year) %>%
+  ggplot(aes(x=year, y=value/1e9, fill=name)) +
+  geom_bar(stat='identity', position='dodge') +
+  labs(x='Tax Year', y='Reduction in AV (billions)', fill='Reduced By',
+       title='Total Amount of AV (Billions) Reductions',
+       caption='Assessor may reduce valuations for other factors such as COVID or floodplains.')
+```
+
+In 2021 for example, the total amount of AV fell from 83.1 billion (mailed) to 78.2 billion (certified) to 70.7 billion (board).
+
+## Appeals in TIF Districts
+
+This analysis was conducting by calculating the change in EAV by tax code throughout the appeal process, aligning those tax codes summations with TIF districts, and identifying when appeals were made above or below the TIF cap. Here the 'capped' change in EAV across Assessor and Board appeals is calculated. Note that the Assessor may sometimes lower values due to other factors such as floodplains (2018) or COVID-19 (2020).
+
+
+```{r}
+# calculate the change in EAV by tax code
+
+eav <- tbl(ptaxsim_db_conn, 'eq_factor') %>%
+  filter(between(year, 2018, 2021)) %>%
+  select(year, eq_factor_final) %>%
+  collect()
+
+eav_changes <- assess %>% 
+  left_join(eav) %>%
+  mutate(across(contains('av_'), ~ .x * eq_factor_final)) %>%
+  group_by(year, tax_code_num) %>%
+  summarize(
+    eav_mailed = sum(av_mailed),
+    eav_cert = sum(av_certified),
+    eav_board = sum(av_board)
+  ) %>%
+  mutate(board_change = eav_board - eav_cert,
+         assess_change = eav_cert - eav_mailed)
+
+# align tax codes with TIFs
+
+all_tax_full <- eav_changes %>%
+  left_join(
+    tbl(ptaxsim_db_conn, 'tif_distribution') %>% 
+  filter(between(year, 2018, 2021)) %>%
+  collect() %>%
+  tibble())
+
+# identify when change in EAV is below/above CAP
+
+all_appeal_delta <- all_tax_full %>% 
+  mutate(
+    tax_code_frozen_eav = if_else(is.na(tax_code_frozen_eav), 0, as.double(tax_code_frozen_eav)),
+    eav_cert_abv = eav_cert - tax_code_frozen_eav,
+    eav_mail_abv = eav_mailed - tax_code_frozen_eav,
+    eav_bor_abv = eav_board - tax_code_frozen_eav
+    ) %>%
+  select(year, tax_code_num, contains('eav_'), board_change, assess_change, tax_code_frozen_eav) %>%
+  mutate(ass_app_cap = case_when(
+    assess_change == 0 | tax_code_frozen_eav == 0 ~ 0, #no appeals or no tif
+    eav_cert_abv > 0 ~ assess_change, #appeals stayed above cap, all caped
+    eav_mail_abv < 0 ~ 0, #initially below cap, none capped
+    TRUE ~ -eav_mail_abv #appeals dropped below cap, capped amount is amt before appeal
+  ),
+  ass_app_uncap = assess_change - ass_app_cap,
+  bor_app_cap = case_when(
+    board_change == 0 | tax_code_frozen_eav == 0 ~ 0, #no appeals or no tif
+    eav_bor_abv > 0 ~ board_change, #appeals stayed above cap, all caped
+    eav_cert_abv < 0 ~ 0, #initially below cap, none capped
+    TRUE ~ -eav_cert_abv #appeals dropped below cap, capped amount is amt before appeal
+  ),
+  bor_app_uncap = board_change - bor_app_cap)
+
+eav_changes <- all_appeal_delta %>% group_by(year) %>%
+  summarize(assessor_cap = sum(ass_app_cap),
+            assessor_uncap = sum(ass_app_uncap),
+            board_cap = sum(bor_app_cap),
+            board_uncap = sum(bor_app_uncap))
+
+eav_changes %>% pivot_longer(!year) %>%
+  separate_wider_delim(name, delim='_', names=c('group', 'type')) %>%
+  ggplot(aes(x=year, y=-value, fill=type, group=group)) +
+  geom_bar(stat='identity', position='fill') +
+  facet_wrap(~group) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x='Tax Year', y='Appeals Category Percent', fill='Impact',
+       title='Proportion of Appeals/EAV Capped Change')
+```
+
+Each bar shows the proportions of appeals at the Assessor and Board level which were either capped (e.g. within a TIF above the TIF's frozen EAV amount) or uncapped. Capped appeals will have no impact on the total EAV available to taxing bodies and therefore will result in no change in tax rates or tax bills. In 2021, for example, about 37% of the total EAV amount granted in appeals at the Board was capped and therefore had no impact on tax rates.
+
+```{r}
+eav_changes %>% pivot_longer(!year) %>%
+  separate_wider_delim(name, delim='_', names=c('group', 'type')) %>%
+  ggplot(aes(x=year, y=-value/1e9, fill=type)) +
+  geom_bar(stat='identity', position='dodge') +
+  facet_wrap(~group) +
+  labs(x='Tax Year', y='Billions EAV', fill='Impact',
+       title='Size of Appeals/EAV Capped Change')
+```
+
+Here the absolute amount in Billions of EAV of appeals granted is shown and their impact on the tax base.
+
+# Notes
+
+Data is from [PTAXSIM](https://ccao-data-science---modeling.gitlab.io/packages/ptaxsim/index.html) and Cook County Open Data. 
