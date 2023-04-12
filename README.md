@@ -26,10 +26,10 @@ This report analyzes recent assessment quality in Pilsen and proposes a possible
 
 Sales ratios studies for Assessor mailed values are shown for Cook County and each triennial separately. Assessment quality is best evaluated in reassessment years. The quality of assessments in other years reflects appeals and market trends between reassessments.
 
-- [Cook County Mailed](/Cook County (mailed).html)
-- [City Mailed](/Cook County (mailed).html) (reassessed in 2018 and 2021)
-- [North Mailed](/Cook County (mailed).html) (reassessed in 2019 and 2022)
-- [South Mailed](/Cook County (mailed).html) (reassessed in 2020)
+- [Cook County Mailed](/county.html)
+- [City Mailed](/city_tri.html) (reassessed in 2018 and 2021)
+- [North Mailed](/north_tri.html) (reassessed in 2019 and 2022)
+- [South Mailed](/south_tri.html) (reassessed in 2020)
 
 ## TIF Districts
 
