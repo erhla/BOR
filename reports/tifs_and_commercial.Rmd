@@ -1,0 +1,277 @@
+---
+title: "How TIFs Impact Tax Bills"
+output: 
+  html_document:
+    df_print: paged
+    theme: sandstone
+author: "Eric Langowski"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, 
+                      message = FALSE, fig.width = 6.4, fig.height = 4.8)
+library(tidyverse)
+library(sf)
+library(cmfproperty)
+library(mapview)
+library(ggplot2)
+library(tidycensus)
+library(lubridate)
+library(tigris)
+theme_set(theme_bw())
+
+ptaxsim_db_conn <- DBI::dbConnect(RSQLite::SQLite(), "./ptaxsim.db")
+
+assess <- tbl(ptaxsim_db_conn, 'pin') %>%
+  filter(between(year, 2018, 2021)) %>%
+  select(year, pin, class, tax_code_num, av_mailed, av_certified, av_board) %>%
+  collect()
+
+tif_sum <- read_csv('produced files/all_tif_agency_sum.csv')
+tif_group <- read_csv('produced files/all_tif_class_group.csv')
+tif_burden <- read_csv('produced files/all_tif_burdened.csv')
+
+muni_sum <- read_csv('produced files/muni_agency_sum.csv')
+muni_group <- read_csv('produced files/muni_class_group.csv')
+muni_burden <- read_csv('produced files/muni_burdened.csv')
+
+clerk_tif <- 
+  readxl::read_excel('ptaxsim/data-raw/tif/distribution/2021 TIF Agency Distribution Report_0.xlsx')
+
+make_table <- function(inputdata){
+    DT::datatable(
+      inputdata, extensions = 'Buttons', 
+      rownames = FALSE,
+      options = list(
+        dom = 'Bfrtip', 
+        buttons = c('excel', 'pdf'),
+        pageLength = 10)
+  )
+}
+```
+
+Tax increment financing (TIF) is a "special funding tool...used to promote public and private investment" in specific areas. TIFs are funded by capturing future property value increases through freezing property values for 23 or 35 years. 
+
+In practice, TIFs have strange impacts on the property tax system. For example, any appeals or exemptions granted to properties in a TIF which is above its initial frozen value have no impact on tax rates and **only** reduce the amount of revenue that a TIF collects. This analysis presents a simplified analysis which explores how appeals or decreases in assessed value impact tax bills.
+
+# Central Business District
+
+A [recent article](https://wirepoints.org/chicagos-commercial-doom-loop-could-result-in-a-property-tax-hike-on-homeowners-as-large-as-22-wirepoints/) estimated changes in Chicago tax bills if there was a 50% decrease in downtown commercial property values. They estimated that this would lead to a 22% increase in values, but taking into account that many commercial downtown properties are in TIFs the change in median Chicago residential tax bills is about 13.5%. This is since reductions in equalized assessed value (eav) for TIFs which are above their frozen eavs lead to a reduction only in TIF revenue with no impact on the larger tax base.
+
+For the purposes of this analysis, the CBD commercial properties are considered class 500 through 899 located in West, North, or South Chicago townships.
+
+## Tax Bill Simulation
+
+In order to illustrate how reductions in CBD Commercial EAV would impact residential tax bills across Chicago, all tax bills in Chicago were simulated 101 times at different percent reductions in CBD EAV (e.g. 0% reduction, 1% reduction, ..., 100% reduction). These simulations are then presented in the following graphs where the x-axis represents the simulated percent reduction in CBD commerical EAV. 
+
+```{r}
+rslt <- read_csv('produced files/wirepoints.csv')
+
+
+ggplot(rslt %>% filter(group == 'Res'), aes(x=pct_change, y=q50bill)) +
+  geom_point() +
+  geom_line() +
+  scale_x_continuous(labels = scales::percent) +
+  scale_y_continuous(labels = scales::dollar, limits = c(3000, NA)) +
+  theme_bw() +
+  labs(x='Percent Reduction in CBD Comm.', y='Median Res. Tax Bill', title='TIF Districts Blunt Impact of CBD Comm. Decrease')
+```
+
+Above is shown the change in median residential tax bill against a simulated percent reduction in central business district (CBD) commercial properties. For example, a 50% decrease in eav for CBD commercial properties corresponds with a median residential bill of $4,114.
+
+```{r}
+rslt3 <- rslt %>% filter(group == 'Res') %>% 
+  mutate(indx_tax = q50bill[pct_change == 0],
+         tax_indx = q50bill / indx_tax)
+
+ggplot(rslt3 , aes(x=pct_change, y=tax_indx)) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(labels = scales::percent) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x='Percent Reduction in CBD Comm.', y='Percent Change in Median Res Bill',
+       title='Changes in Median Res. Bill as CBD is Reduced') +
+  theme_bw()
+```
+
+Above is shown the percentage increase in median residential bill for simulated percentage reductions in CBD commercial eav. For example, a 50% decrease in CBD eav corresponds with an approximate 13% increase in median residential bills.
+
+```{r}
+rslt2 <- rslt %>% filter(is.na(group)) %>% 
+  group_by(agency_minor_type) %>%
+  mutate(indx_tax = final_tax[pct_change == 0],
+         tax_indx = final_tax / indx_tax)
+
+
+ggplot(rslt2 %>% filter(agency_minor_type == 'TIF'), aes(x=pct_change, y=final_tax/1e6)) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(labels = scales::percent) +
+  scale_y_continuous(labels = scales::dollar) +
+  labs(x='Percent Reduction in CBD Comm.', y='Total Tax Collected ($M)',
+       title='Decrease in TIF tax revenue as CBD Reduction Increases') +
+  theme_bw()
+```
+
+Above is shown the decrease in total revenue collected by Chicago TIF districts against simulated decreases in CBD commercial EAV. For example, a 100% reduction in CBD commercial EAV leads for TIF revenue to fall from 1.2 billion to 800 million dollars.
+
+```{r}
+rslt4 <- rslt3 %>% mutate(index_lag = lag(tax_indx)) %>% select(pct_change, tax_indx, index_lag) %>%
+  mutate(indx_delta = tax_indx - index_lag)
+
+ggplot(rslt4 , aes(x=pct_change, y=indx_delta)) +
+  geom_point() +
+  geom_line() +
+  scale_x_continuous(labels = scales::percent) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x='Percent Reduction in CBD Comm.', y='Derivative of Med. Res Bill against Pct Red',
+       title='Change in Rate of Res. Bill Increases') +
+  theme_bw()
+```
+
+This graph shows the rate at which residential bills increase for every 1% decrease in CBD eav. For example, from a 99% reduction to a 100% reduction in EAV, median residential bills increase 0.6%.
+
+# 'Free' Appeals
+
+Whenever a property makes a successful appeal (which is not in a TIF), it reduces its individual EAV and the total amount of EAV available to its taxing districts. This causes an increase in tax rates for its taxing bodies. If a property is in a TIF and that TIF is above its frozen EAV, an appeal will be 'free' to its taxing bodies lowering only the amount of EAV that the TIF collects tax revenue on. Appeals have many impacts in Cook County and this section presents a narrow analysis focused only on TIF districts.
+
+## Appeals Summary
+
+The impact of successful appeals can be measured from mailed assessor values to certified assessor values ("Assessor appeals") and from certified assessor values to final board of review values ("Board appeals").
+
+```{r}
+reduc_cnts <- assess %>% mutate(assessor_appeal = if_else(av_mailed > av_certified, 1, 0),
+                  board_appeal = if_else(av_certified > av_board, 1, 0)) %>%
+  group_by(year) %>%
+  summarize(total_assessor_reductions = sum(assessor_appeal, na.rm=T),
+            total_board_reductions = sum(board_appeal, na.rm=T)) %>%
+  pivot_longer(!year)
+
+ggplot(reduc_cnts, aes(x=year, y=value, fill=name)) +
+  geom_bar(stat='identity', position='dodge') +
+  labs(x='Tax Year', y='Number of Reductions', fill='',
+       title='Number of Reductions in Appeals from Assess. and Board',
+       caption='Note that in 2020 the Assessor implemented widespread COVID reductions.')
+```
+
+```{r}
+total_av <- assess %>%
+  group_by(year) %>%
+  summarize(
+    total_mailed = sum(av_mailed, na.rm=T),
+    total_cert = sum(av_certified, na.rm=T),
+    total_board = sum(av_board, na.rm=T)
+  )
+
+ggplot(total_av %>%
+  pivot_longer(!year), aes(x=year, y=value/1e9, fill=fct_rev(name))) +
+  geom_bar(stat='identity', position='dodge') +
+  labs(x='Tax Year', y='AV (billions)', fill='Value',
+       title='Total Amount of AV (Billions) at Each Stage')
+
+total_av %>% mutate(assessor = total_mailed - total_cert,
+                    board = total_cert - total_board) %>%
+  select(year, assessor, board) %>%
+  pivot_longer(!year) %>%
+  ggplot(aes(x=year, y=value/1e9, fill=name)) +
+  geom_bar(stat='identity', position='dodge') +
+  labs(x='Tax Year', y='Reduction in AV (billions)', fill='Reduced By',
+       title='Total Amount of AV (Billions) Reductions',
+       caption='Assessor may reduce valuations for other factors such as COVID or floodplains.')
+```
+
+In 2021 for example, the total amount of AV fell from 83.1 billion (mailed) to 78.2 billion (certified) to 70.7 billion (board).
+
+## Appeals in TIF Districts
+
+This analysis was conducting by calculating the change in EAV by tax code throughout the appeal process, aligning those tax codes summations with TIF districts, and identifying when appeals were made above or below the TIF cap. Here the 'capped' change in EAV across Assessor and Board appeals is calculated. Note that the Assessor may sometimes lower values due to other factors such as floodplains (2018) or COVID-19 (2020).
+
+
+```{r}
+# calculate the change in EAV by tax code
+
+eav <- tbl(ptaxsim_db_conn, 'eq_factor') %>%
+  filter(between(year, 2018, 2021)) %>%
+  select(year, eq_factor_final) %>%
+  collect()
+
+eav_changes <- assess %>% 
+  left_join(eav) %>%
+  mutate(across(contains('av_'), ~ .x * eq_factor_final)) %>%
+  group_by(year, tax_code_num) %>%
+  summarize(
+    eav_mailed = sum(av_mailed),
+    eav_cert = sum(av_certified),
+    eav_board = sum(av_board)
+  ) %>%
+  mutate(board_change = eav_board - eav_cert,
+         assess_change = eav_cert - eav_mailed)
+
+# align tax codes with TIFs
+
+all_tax_full <- eav_changes %>%
+  left_join(
+    tbl(ptaxsim_db_conn, 'tif_distribution') %>% 
+  filter(between(year, 2018, 2021)) %>%
+  collect() %>%
+  tibble())
+
+# identify when change in EAV is below/above CAP
+
+all_appeal_delta <- all_tax_full %>% 
+  mutate(
+    tax_code_frozen_eav = if_else(is.na(tax_code_frozen_eav), 0, as.double(tax_code_frozen_eav)),
+    eav_cert_abv = eav_cert - tax_code_frozen_eav,
+    eav_mail_abv = eav_mailed - tax_code_frozen_eav,
+    eav_bor_abv = eav_board - tax_code_frozen_eav
+    ) %>%
+  select(year, tax_code_num, contains('eav_'), board_change, assess_change, tax_code_frozen_eav) %>%
+  mutate(ass_app_cap = case_when(
+    assess_change == 0 | tax_code_frozen_eav == 0 ~ 0, #no appeals or no tif
+    eav_cert_abv > 0 ~ assess_change, #appeals stayed above cap, all caped
+    eav_mail_abv < 0 ~ 0, #initially below cap, none capped
+    TRUE ~ -eav_mail_abv #appeals dropped below cap, capped amount is amt before appeal
+  ),
+  ass_app_uncap = assess_change - ass_app_cap,
+  bor_app_cap = case_when(
+    board_change == 0 | tax_code_frozen_eav == 0 ~ 0, #no appeals or no tif
+    eav_bor_abv > 0 ~ board_change, #appeals stayed above cap, all caped
+    eav_cert_abv < 0 ~ 0, #initially below cap, none capped
+    TRUE ~ -eav_cert_abv #appeals dropped below cap, capped amount is amt before appeal
+  ),
+  bor_app_uncap = board_change - bor_app_cap)
+
+eav_changes <- all_appeal_delta %>% group_by(year) %>%
+  summarize(assessor_cap = sum(ass_app_cap),
+            assessor_uncap = sum(ass_app_uncap),
+            board_cap = sum(bor_app_cap),
+            board_uncap = sum(bor_app_uncap))
+
+eav_changes %>% pivot_longer(!year) %>%
+  separate_wider_delim(name, delim='_', names=c('group', 'type')) %>%
+  ggplot(aes(x=year, y=-value, fill=type, group=group)) +
+  geom_bar(stat='identity', position='fill') +
+  facet_wrap(~group) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x='Tax Year', y='Appeals Category Percent', fill='Impact',
+       title='Proportion of Appeals/EAV Capped Change')
+```
+
+Each bar shows the proportions of appeals at the Assessor and Board level which were either capped (e.g. within a TIF above the TIF's frozen EAV amount) or uncapped. Capped appeals will have no impact on the total EAV available to taxing bodies and therefore will result in no change in tax rates or tax bills. In 2021, for example, about 37% of the total EAV amount granted in appeals at the Board was capped and therefore had no impact on tax rates.
+
+```{r}
+eav_changes %>% pivot_longer(!year) %>%
+  separate_wider_delim(name, delim='_', names=c('group', 'type')) %>%
+  ggplot(aes(x=year, y=-value/1e9, fill=type)) +
+  geom_bar(stat='identity', position='dodge') +
+  facet_wrap(~group) +
+  labs(x='Tax Year', y='Billions EAV', fill='Impact',
+       title='Size of Appeals/EAV Capped Change')
+```
+
+Here the absolute amount in Billions of EAV of appeals granted is shown and their impact on the tax base.
+
+# Notes
+
+This analysis utilizes [PTAXSIM](https://ccao-data-science---modeling.gitlab.io/packages/ptaxsim/index.html) and Cook County Open Data. In particular, the analysis of [Tinkering with TIFs](https://ccao-data-science---modeling.gitlab.io/packages/ptaxsim/articles/tifs.html) is replicated and expanded here with great thanks to the Cook County Assessor's Office Data Science team for assistance debugging.
+

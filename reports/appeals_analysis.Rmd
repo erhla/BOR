@@ -1,0 +1,196 @@
+---
+title: "Appeals Analysis"
+output: 
+  html_document:
+    df_print: paged
+    theme: sandstone
+author: "Eric Langowski"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, 
+                      message = FALSE, fig.width = 8, fig.height = 6)
+library(tidyverse)
+library(sf)
+library(cmfproperty)
+library(mapview)
+library(ggplot2)
+library(tidycensus)
+library(lubridate)
+library(tigris)
+library(ptaxsim)
+ptaxsim_db_conn <- DBI::dbConnect(RSQLite::SQLite(), "./ptaxsim.db")
+
+theme_set(theme_bw())
+
+
+make_table <- function(inputdata){
+    DT::datatable(
+      inputdata, extensions = 'Buttons', 
+      rownames = FALSE,
+      options = list(
+        dom = 'Bfrtip', 
+        buttons = c('excel', 'pdf'),
+        pageLength = 20)
+  )
+}
+
+ccao <- read_csv('~/../Downloads/Assessor_-_Historic_Assessed_Values(1).csv') %>%
+  filter(tax_year >= 2018)
+bor <- read_csv('~/../Downloads/Board_of_Review_Appeal_Decision_History(2).csv') %>%
+  filter(tax_year >= 2018)
+
+ccao_mini <- ccao %>% select(pin, tax_year, class, township_code, township_name, certified_tot, board_tot)
+bor_mini <- bor %>% 
+  select(pin, township_code, tax_year, AppealTrk, 
+         BOR_TotalValue, Result, ChangeReasonDescription, NoChangeReasonDescription)
+
+finished_towns <- bor_mini %>% filter(tax_year == 2022) %>% distinct(township_code) %>%
+  pull(township_code)
+
+
+joined <- ccao_mini %>% 
+  left_join(bor_mini) %>%
+  filter(tax_year != 2023) %>%
+  mutate(board_tot = 
+           case_when(
+             tax_year != 2022 ~ board_tot,
+             tax_year == 2022 & township_code %in% finished_towns & !is.na(BOR_TotalValue) ~ BOR_TotalValue,
+             tax_year == 2022 & township_code %in% finished_towns ~ certified_tot,
+             TRUE ~ NA_integer_
+           ),
+         typer = if_else(str_sub(class, 1, 1) == '2', 'res', 'nonres'))
+
+
+targ <- joined %>%
+  filter(township_code %in% c(10, 18, 23, 26, 35),
+         tax_year == 2019 | tax_year == 2021 | tax_year == 2022) %>%
+  mutate(Result = replace_na(Result, 'None'))
+
+#targ_pins <- targ %>% distinct(pin) %>% pull(pin)
+
+
+
+```
+
+This report analyzes appeals filed at the Board of Review (BOR). Data on [all assessments is found here](https://datacatalog.cookcountyil.gov/Property-Taxation/Assessor-Historic-Assessed-Values/uzyt-m557) and data on [all BOR appeals is found here](https://datacatalog.cookcountyil.gov/Property-Taxation/Board-of-Review-Appeal-Decision-History/7pny-nedm).
+
+## AV Changes at BOR, 2019 & 2022 for selected towns
+
+```{r}
+av_reduction <- targ %>%
+  group_by(township_name, typer, tax_year) %>%
+  summarize(
+    assessor = sum(certified_tot),
+    bor = sum(board_tot)) %>%
+  mutate(av_red = bor - assessor, 
+         pct_av_red = scales::percent(av_red / assessor),
+         )
+
+av_reduction %>% make_table()
+```
+
+This table shows the total AV by town and tax year at the assessor certified (post-assessor appeals) and BOR certified (post-BOR appeals) and the percent change in AV across the stages (`pct_av_red`).
+
+## AV Share, 2019 & 2022 for selected towns
+
+```{r}
+targ %>%
+  group_by(township_name, typer, tax_year) %>%
+  summarize(
+    assessor = sum(certified_tot),
+    bor = sum(board_tot)) %>%
+  pivot_wider(names_from=typer, values_from=c('assessor', 'bor')) %>%
+  left_join(
+    targ %>%
+      group_by(township_name, tax_year) %>%
+      summarize(
+        assessor = sum(certified_tot),
+        bor = sum(board_tot))
+  ) %>%
+  mutate(assessor_res_pct = assessor_res / assessor,
+         assessor_nonres_pct = assessor_nonres / assessor,
+         bor_res_pct = bor_res / bor,
+         bor_nonres_pct = bor_nonres / bor) %>%
+  select(township_name, tax_year, contains('pct')) %>%
+  mutate(
+    shift_to_res_pct = bor_res_pct - assessor_res_pct,
+    across(contains('pct'), scales::percent)) %>% make_table()
+```
+
+This table shows the percentage of total AV value found in residential (`res`) or non-residential (`nonres`) properties at the two stages. It also shows the shift in the percentage share of all AV value held by residential property classes across the two stages. For example a value of 2.2% in `shift_to_res_pct` shows that the share of AV held by residential property increased by 2.2% from the Assessor to the Board.
+
+## Counts of Appeals, 2019 & 2022 for selected towns
+
+```{r}
+prop_cnts <- 
+  targ %>% 
+  mutate(pin10 = str_sub(pin, 1, 10)) %>% 
+  distinct(pin10, township_name, typer, tax_year) %>% 
+  count(township_name, typer, tax_year)
+
+appeal_counts <- targ %>%
+  distinct(tax_year, class, township_code, AppealTrk, .keep_all = TRUE) %>%
+  left_join(prop_cnts) %>%
+  group_by(township_name, typer, tax_year) %>%
+  summarize(
+    total_appeals = n(),
+    pct_reduction = scales::percent(length(pin[Result == 'Decrease']) / total_appeals),
+    appeals_per_prop10 = round(total_appeals / median(`n`), 3)
+  )
+
+appeal_counts %>% make_table()
+```
+
+
+This table shows the total number of appeals, share of appeals with a reduction (`pct_reduction`) and the appeals per unique 10 digit pin per township and tax year. Note that appeals can include multiple parcels. This table counts each appeal once regardless of how many properties are included in that appeal. A 10 digit pin is roughly equivalent to a building level count which is the level that almost all appeals are filed on.
+
+## Counts of Appeals, 2019 & 2022 for selected towns
+
+```{r}
+prop_cnts2 <- 
+  targ %>% 
+  mutate(pin10 = str_sub(pin, 1, 10)) %>% 
+  distinct(pin10, typer, tax_year) %>% 
+  count(typer, tax_year)
+
+appeal_counts2 <- targ %>%
+  distinct(tax_year, class, AppealTrk, .keep_all = TRUE) %>%
+  left_join(prop_cnts2) %>%
+  group_by(typer, tax_year) %>%
+  summarize(
+    total_appeals = n(),
+    pct_reduction = scales::percent(length(pin[Result == 'Decrease']) / total_appeals),
+    appeals_per_prop10 = round(total_appeals / median(`n`), 3)
+  )
+
+appeal_counts2 %>% make_table()
+```
+
+
+## Change Code Reasons
+
+```{r}
+targ %>% filter(!is.na(AppealTrk),
+                Result != 'Increase') %>% 
+  mutate(pin10 = str_sub(pin, 1, 10)) %>% 
+  distinct(pin10, typer, tax_year, .keep_all=TRUE) %>%
+  mutate(
+    change_reasons = if_else(!is.na(ChangeReasonDescription), 
+                             ChangeReasonDescription, 
+                             NoChangeReasonDescription),
+    change_reasons = str_squish(str_remove_all(change_reasons, '(\\.)|,')),
+    change_reasons = str_replace_all(change_reasons, 'date', 'data')
+  ) %>% group_by(tax_year, change_reasons) %>%
+  count(Result) %>%
+  pivot_wider(names_from=Result, values_from=n, values_fill=0) %>%
+  mutate(total = Decrease + `No Change`) %>%
+  mutate(change_rate = Decrease / total) %>%
+  pivot_wider(names_from = tax_year, values_from=c(Decrease, `No Change`, total, change_rate),
+              values_fill=0) %>%
+  filter(total_2022 > 150) %>%
+  make_table()
+
+
+```
+
