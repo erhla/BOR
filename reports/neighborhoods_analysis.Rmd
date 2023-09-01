@@ -22,12 +22,13 @@ library(foreach)
 library(doParallel)
 library(tidycensus)
 library(lubridate)
+library(data.table)
 theme_set(theme_bw())
 
-neighborhoods <- read_sf('Assessor - Neighborhood Boundaries.geojson')
-sales <- read_csv('~/../Downloads/Assessor_-_Parcel_Sales.csv')
-assess <- read_csv('~/../Downloads/Assessor_-_Historic_Assessed_Values.csv')
-parcels <- read_sf('~/../Downloads/ccgisdata - Parcel 2021.geojson')
+neighborhoods <- read_sf('open data/Assessor - Neighborhood Boundaries.geojson')
+sales <- fread('open data/Assessor_-_Parcel_Sales.csv')
+assess <- fread('open data/Assessor_-_Historic_Assessed_Values.csv')
+parcels <- read_sf('open data/ccgisdata - Parcel 2021.geojson')
 
 cook_tracts <- get_acs(geography='tract',
                 variables = c(capitaincome = "B19301_001",

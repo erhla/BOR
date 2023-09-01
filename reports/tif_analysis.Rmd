@@ -27,9 +27,9 @@ assess <- tbl(ptaxsim_db_conn, 'pin') %>%
   select(year, pin, class, tax_code_num, av_mailed, av_certified, av_board) %>%
   collect()
 
-tif_sum <- read_csv('all_tif_agency_sum.csv')
-tif_group <- read_csv('all_tif_class_group.csv')
-tif_burden <- read_csv('all_tif_burdened.csv')
+tif_sum <- read_csv('produced files/all_tif_agency_sum.csv ')
+tif_group <- read_csv('produced files/all_tif_class_group.csv')
+tif_burden <- read_csv('produced files/all_tif_burdened.csv')
 
 muni_sum <- read_csv('muni_agency_sum.csv')
 muni_group <- read_csv('muni_class_group.csv')
